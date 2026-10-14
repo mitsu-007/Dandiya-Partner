@@ -203,6 +203,7 @@ export const RequestsView: React.FC<RequestsViewProps> = ({ onNavigateToConnecti
       const now = new Date().toISOString();
       const batch = writeBatch(db);
       const reqRef = doc(db, 'requests', req.id);
+      const memberContactRef = doc(db, 'sharedContacts', req.id, 'members', currentUser.uid);
       const sharedContactRef = doc(db, 'sharedContacts', req.id);
       const privateContactRef = doc(db, 'usersPrivate', currentUser.uid);
 
@@ -214,13 +215,25 @@ export const RequestsView: React.FC<RequestsViewProps> = ({ onNavigateToConnecti
         updatedAt: now,
       });
 
-      // 2. Create/update Shared Contact record in sharedContacts/{req.id}
+      // 2. Create/update Shared Contact record in sharedContacts/{req.id}/members/{currentUser.uid}
+      batch.set(
+        memberContactRef,
+        {
+          ownerUid: currentUser.uid,
+          requestId: req.id,
+          whatsapp: cleanDigits,
+          shareConsent: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+
+      // Top-level document update for legacy compatibility (stores recipientWhatsapp)
       batch.set(
         sharedContactRef,
         {
-          ownerUid: currentUser.uid,
           recipientUid: currentUser.uid,
-          whatsapp: cleanDigits,
           recipientWhatsapp: cleanDigits,
           updatedAt: now,
         },

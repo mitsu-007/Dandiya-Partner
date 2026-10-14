@@ -107,10 +107,13 @@ service cloud.firestore {
       );
     }
 
-    // Shared Contacts (Authorized contact exchange for accepted requests)
+    // Shared Contacts (Authorized contact exchange for partner requests)
     match /sharedContacts/{requestId} {
-      // Readable by sender or recipient of the accepted request, or admin
-      allow read: if isSignedIn() && (
+      allow read, write: if isSignedIn() && (
+        resource == null ||
+        resource.data.get('senderUid', '') == request.auth.uid ||
+        resource.data.get('recipientUid', '') == request.auth.uid ||
+        resource.data.get('ownerUid', '') == request.auth.uid ||
         (
           exists(/databases/$(database)/documents/requests/$(requestId)) &&
           (
@@ -118,30 +121,39 @@ service cloud.firestore {
             get(/databases/$(database)/documents/requests/$(requestId)).data.get('senderId', '') == request.auth.uid ||
             get(/databases/$(database)/documents/requests/$(requestId)).data.get('recipientUid', '') == request.auth.uid ||
             get(/databases/$(database)/documents/requests/$(requestId)).data.get('receiverId', '') == request.auth.uid
-          ) &&
-          get(/databases/$(database)/documents/requests/$(requestId)).data.get('status', '') == 'accepted'
+          )
         ) || isAdmin()
       );
 
-      // Create/Update: Allowed if sender or recipient participating in request
-      allow create, update: if isSignedIn() && (
-        exists(/databases/$(database)/documents/requests/$(requestId)) &&
-        (
-          get(/databases/$(database)/documents/requests/$(requestId)).data.get('senderUid', '') == request.auth.uid ||
-          get(/databases/$(database)/documents/requests/$(requestId)).data.get('senderId', '') == request.auth.uid ||
-          get(/databases/$(database)/documents/requests/$(requestId)).data.get('recipientUid', '') == request.auth.uid ||
-          get(/databases/$(database)/documents/requests/$(requestId)).data.get('receiverId', '') == request.auth.uid ||
-          incoming().get('ownerUid', '') == request.auth.uid ||
-          incoming().get('senderUid', '') == request.auth.uid
-        )
-      );
+      // Subcollection: member-specific contact documents owned by memberUid
+      match /members/{memberUid} {
+        // Read allowed if request exists, status is accepted, and reading user is a participant in request
+        allow read: if isSignedIn() && (
+          (
+            exists(/databases/$(database)/documents/requests/$(requestId)) &&
+            (
+              get(/databases/$(database)/documents/requests/$(requestId)).data.get('senderUid', '') == request.auth.uid ||
+              get(/databases/$(database)/documents/requests/$(requestId)).data.get('senderId', '') == request.auth.uid ||
+              get(/databases/$(database)/documents/requests/$(requestId)).data.get('recipientUid', '') == request.auth.uid ||
+              get(/databases/$(database)/documents/requests/$(requestId)).data.get('receiverId', '') == request.auth.uid
+            ) &&
+            get(/databases/$(database)/documents/requests/$(requestId)).data.get('status', '') == 'accepted'
+          ) ||
+          memberUid == request.auth.uid ||
+          isAdmin()
+        );
 
-      // Delete: Allowed by owner or admin
-      allow delete: if isSignedIn() && (
-        resource.data.get('ownerUid', '') == request.auth.uid ||
-        resource.data.get('senderUid', '') == request.auth.uid ||
-        isAdmin()
-      );
+        // Write allowed ONLY if current user is memberUid AND ownerUid equals request.auth.uid
+        allow create, update: if isSignedIn() && (
+          memberUid == request.auth.uid &&
+          incoming().get('ownerUid', '') == request.auth.uid
+        );
+
+        allow delete: if isSignedIn() && (
+          memberUid == request.auth.uid ||
+          isAdmin()
+        );
+      }
     }
 
     // Notifications

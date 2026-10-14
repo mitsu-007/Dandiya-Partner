@@ -196,13 +196,15 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({ onNavigateToRequests
     }
 
     setSendingRequest(true);
+    const requestId = `${currentUser.uid}_${currentProfile.uid}`;
+    const reverseRequestId = `${currentProfile.uid}_${currentUser.uid}`;
+    const now = new Date().toISOString();
 
+    // 1. Save / sync sender's WhatsApp contact in usersPrivate
     try {
-      const requestId = `${currentUser.uid}_${currentProfile.uid}`;
-      const reverseRequestId = `${currentProfile.uid}_${currentUser.uid}`;
-      const now = new Date().toISOString();
-
-      // 1. Save / sync sender's WhatsApp contact in usersPrivate
+      if (process.env.NODE_ENV === 'development' || true) {
+        console.log('[SendRequest] Operation 1: Syncing userPrivate contact details');
+      }
       await setDoc(
         doc(db, 'usersPrivate', currentUser.uid),
         {
@@ -215,21 +217,33 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({ onNavigateToRequests
         { merge: true }
       );
       await refreshProfile();
+    } catch (privateErr) {
+      console.warn('[SendRequest] Notice syncing userPrivate contact:', privateErr);
+    }
 
-      // 2. Verify selected recipient profile exists in users collection
+    // 2. Verify selected recipient profile exists in users collection
+    try {
+      if (process.env.NODE_ENV === 'development' || true) {
+        console.log('[SendRequest] Operation 2: Validating recipient user profile exists');
+      }
       const recipientSnap = await getDoc(doc(db, 'users', currentProfile.uid));
       if (!recipientSnap.exists()) {
-        throw new Error("Selected student profile is no longer available.");
+        alert("Selected student profile is no longer available.");
+        setSendingRequest(false);
+        setSenderWhatsappModal(false);
+        return;
       }
+    } catch (recipientErr) {
+      console.warn('[SendRequest] Notice checking recipient profile:', recipientErr);
+    }
 
-      // 3. Check for duplicate active requests
-      let existingReq;
-      try {
-        existingReq = await getDoc(doc(db, 'requests', requestId));
-      } catch (err) {
-        console.warn("Notice checking request doc:", err);
+    // 3. Check for duplicate active requests
+    try {
+      if (process.env.NODE_ENV === 'development' || true) {
+        console.log('[SendRequest] Operation 3: Checking duplicate active request status');
       }
-      if (existingReq?.exists()) {
+      const existingReq = await getDoc(doc(db, 'requests', requestId));
+      if (existingReq.exists()) {
         const data = existingReq.data();
         if (data?.status === 'pending' || data?.status === 'accepted') {
           alert("An active partner request already exists for this student.");
@@ -240,13 +254,8 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({ onNavigateToRequests
         }
       }
 
-      let existingReverseReq;
-      try {
-        existingReverseReq = await getDoc(doc(db, 'requests', reverseRequestId));
-      } catch (err) {
-        console.warn("Notice checking reverse request doc:", err);
-      }
-      if (existingReverseReq?.exists()) {
+      const existingReverseReq = await getDoc(doc(db, 'requests', reverseRequestId));
+      if (existingReverseReq.exists()) {
         const data = existingReverseReq.data();
         if (data?.status === 'pending' || data?.status === 'accepted') {
           alert("This student has already sent you a partner request! Check your Received Requests tab.");
@@ -256,8 +265,16 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({ onNavigateToRequests
           return;
         }
       }
+    } catch (dupErr) {
+      console.warn("[SendRequest] Notice checking duplicate request doc:", dupErr);
+    }
 
-      // 4. Create persistent partner request recording explicit sender contact sharing consent
+    // 4. Primary Operation: Create persistent partner request document in requests/{requestId}
+    let requestCreated = false;
+    try {
+      if (process.env.NODE_ENV === 'development' || true) {
+        console.log(`[SendRequest] Operation 4: Primary request creation in requests/${requestId}`);
+      }
       await setDoc(doc(db, 'requests', requestId), {
         requestId,
         senderUid: currentUser.uid,
@@ -268,21 +285,71 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({ onNavigateToRequests
         createdAt: now,
         updatedAt: now,
       });
+      requestCreated = true;
+    } catch (primaryErr: any) {
+      console.error('[SendRequest] Primary request creation failed:', primaryErr);
+      handleFirestoreError(primaryErr, OperationType.CREATE, `requests/${requestId}`);
+      alert(`Could not send request: ${primaryErr.message || primaryErr}`);
+      setActionFeedback(null);
+      setSendingRequest(false);
+      setSenderWhatsappModal(false);
+      return;
+    }
 
-      // 5. Store sender's contact in sharedContacts/{requestId}
-      await setDoc(
-        doc(db, 'sharedContacts', requestId),
-        {
+    // 5. Secondary Operation: Store contact exchange in sharedContacts/{requestId}/members/{currentUser.uid} & optional notification
+    if (requestCreated) {
+      try {
+        if (process.env.NODE_ENV === 'development' || true) {
+          console.log(`[SendRequest] Operation 5: Secondary sharedContacts update in sharedContacts/${requestId}/members/${currentUser.uid}`);
+        }
+
+        // Store sender's contact in member subcollection with explicit ownerUid
+        await setDoc(
+          doc(db, 'sharedContacts', requestId, 'members', currentUser.uid),
+          {
+            ownerUid: currentUser.uid,
+            requestId: requestId,
+            whatsapp: cleanDigits,
+            shareConsent: true,
+            createdAt: now,
+            updatedAt: now,
+          },
+          { merge: true }
+        );
+
+        // Top-level document update for legacy compatibility
+        await setDoc(
+          doc(db, 'sharedContacts', requestId),
+          {
+            senderUid: currentUser.uid,
+            recipientUid: currentProfile.uid,
+            senderWhatsapp: cleanDigits,
+            updatedAt: now,
+          },
+          { merge: true }
+        );
+      } catch (secondaryErr) {
+        console.warn('[SendRequest] Secondary sharedContacts write notice:', secondaryErr);
+      }
+
+      try {
+        if (process.env.NODE_ENV === 'development' || true) {
+          console.log('[SendRequest] Operation 6: Creating recipient notification');
+        }
+        await addDoc(collection(db, 'notifications'), {
+          userId: currentProfile.uid,
           senderUid: currentUser.uid,
-          recipientUid: currentProfile.uid,
-          senderWhatsapp: cleanDigits,
+          type: 'request_received',
+          title: 'New Dandiya Partner Request! 💃',
+          message: `${userPublic?.fullName || 'A GLBITM student'} sent you a Dandiya partner invitation!`,
+          read: false,
           createdAt: now,
-          updatedAt: now,
-        },
-        { merge: true }
-      );
+        });
+      } catch (notifErr) {
+        console.warn('[SendRequest] Secondary notification creation notice:', notifErr);
+      }
 
-      // Show celebratory feedback and confetti ONLY after successful creation
+      // Show celebratory feedback and confetti ONLY after successful primary request creation
       setActionFeedback('liked');
       confetti({
         particleCount: 50,
@@ -299,13 +366,6 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({ onNavigateToRequests
         setCurrentIndex((prev) => prev + 1);
         setSendingRequest(false);
       }, 300);
-    } catch (error: any) {
-      console.error('Error sending request:', error);
-      handleFirestoreError(error, OperationType.CREATE, `requests/${currentUser.uid}_${currentProfile.uid}`);
-      alert(`Could not send request: ${error.message || error}`);
-      setActionFeedback(null);
-      setSendingRequest(false);
-      setSenderWhatsappModal(false);
     }
   };
 

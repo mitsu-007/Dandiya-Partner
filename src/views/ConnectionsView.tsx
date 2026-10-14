@@ -21,7 +21,7 @@ import {
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { StudentAvatar } from '../components/StudentAvatar';
-import { PartnerRequest, UserPublic, SharedContact } from '../types';
+import { PartnerRequest, UserPublic } from '../types';
 import { openWhatsApp } from '../utils/whatsapp';
 
 export const ConnectionsView: React.FC = () => {
@@ -31,7 +31,7 @@ export const ConnectionsView: React.FC = () => {
     {
       request: PartnerRequest;
       partnerProfile: UserPublic;
-      sharedContact?: SharedContact;
+      otherStudentWhatsappNumber?: string;
       otherUserId: string;
       isSender: boolean;
     }[]
@@ -67,7 +67,7 @@ export const ConnectionsView: React.FC = () => {
         const list: {
           request: PartnerRequest;
           partnerProfile: UserPublic;
-          sharedContact?: SharedContact;
+          otherStudentWhatsappNumber?: string;
           otherUserId: string;
           isSender: boolean;
         }[] = [];
@@ -80,13 +80,19 @@ export const ConnectionsView: React.FC = () => {
 
           if (!senderId || !receiverId) continue;
 
+          // 1. Determine other student's UID
           const isSender = senderId === currentUser.uid;
           const otherUserId = isSender ? receiverId : senderId;
+
+          if (otherUserId === currentUser.uid) {
+            console.error('[WhatsApp Security Guard] calculated otherUserId is equal to currentUser.uid!');
+            continue;
+          }
 
           if (processedOtherUids.has(otherUserId)) continue;
           processedOtherUids.add(otherUserId);
 
-          // 1. Fetch partner's public profile from users/{otherUserId}
+          // Fetch partner's public profile from users/{otherUserId}
           let partnerProfile: UserPublic;
           try {
             const profileSnap = await getDoc(doc(db, 'users', otherUserId));
@@ -129,58 +135,97 @@ export const ConnectionsView: React.FC = () => {
             };
           }
 
-          // 2. Fetch shared contact from sharedContacts/{requestId} for both sender and recipient
-          let sharedContact: SharedContact | undefined = undefined;
+          // 2. Retrieve OTHER student's authorized shared contact
+          let otherStudentWhatsappNumber: string | undefined = undefined;
+          let contactOwnerUid: string | undefined = undefined;
+
+          // Primary Retrieval: sharedContacts/{requestId}/members/{otherUserId}
           try {
-            const sharedSnap = await getDoc(doc(db, 'sharedContacts', reqData.id));
-            if (sharedSnap.exists()) {
-              sharedContact = sharedSnap.data() as SharedContact;
+            const memberSnap = await getDoc(doc(db, 'sharedContacts', reqData.id, 'members', otherUserId));
+            if (memberSnap.exists()) {
+              const memberData = memberSnap.data();
+              contactOwnerUid = memberData.ownerUid;
+
+              // Development Diagnostic Consistency Check
+              if (memberData.ownerUid !== otherUserId) {
+                console.error('[WhatsApp Diagnostic Error] Member contact ownerUid does not match otherUserId!', {
+                  ownerUid: memberData.ownerUid,
+                  otherUserId,
+                });
+              } else {
+                otherStudentWhatsappNumber = memberData.whatsapp || memberData.whatsappNumber;
+              }
             }
-          } catch (sharedErr) {
-            console.warn(`[Connections] sharedContacts/${reqData.id} fetch notice:`, sharedErr);
+          } catch (memberErr) {
+            console.warn(`[Connections] Notice reading sharedContacts/${reqData.id}/members/${otherUserId}:`, memberErr);
           }
 
-          // 3. Auto-sync current user's registered WhatsApp if missing from sharedContacts
+          // Fallback Retrieval (for legacy records):
+          if (!otherStudentWhatsappNumber) {
+            try {
+              const topSnap = await getDoc(doc(db, 'sharedContacts', reqData.id));
+              if (topSnap.exists()) {
+                const topData = topSnap.data();
+                const candidateNumber = isSender
+                  ? topData.recipientWhatsapp
+                  : (topData.senderWhatsapp || (topData.ownerUid === otherUserId ? topData.whatsapp : undefined));
+                
+                contactOwnerUid = isSender ? topData.recipientUid : (topData.senderUid || topData.ownerUid);
+
+                // Diagnostic check: NEVER accept current user's own number
+                if (candidateNumber) {
+                  const cleanCand = candidateNumber.replace(/\D/g, '');
+                  const cleanMy = (userPrivate as any)?.whatsapp?.replace(/\D/g, '') || '';
+                  
+                  if (cleanCand && cleanCand !== cleanMy) {
+                    otherStudentWhatsappNumber = cleanCand;
+                  } else {
+                    console.warn("[WhatsApp Diagnostic Warning] Rejected legacy top-level contact because it matched current user's number.");
+                  }
+                }
+              }
+            } catch (topErr) {
+              console.warn(`[Connections] Notice reading top-level sharedContacts/${reqData.id}:`, topErr);
+            }
+          }
+
+          // Development Diagnostics Logging (without logging phone numbers)
+          if (process.env.NODE_ENV === 'development' || true) {
+            console.log('[WhatsApp Mapping Diagnostic]', {
+              currentUserUid: currentUser.uid,
+              requestSenderUid: senderId,
+              requestRecipientUid: receiverId,
+              calculatedOtherUserId: otherUserId,
+              contactOwnerUid: contactOwnerUid || 'None',
+              authorizedContactFound: !!otherStudentWhatsappNumber,
+            });
+          }
+
+          // 3. Auto-sync current user's registered WhatsApp in their OWN member doc
           const myWhatsapp = (userPrivate as any)?.whatsapp || (userPrivate as any)?.whatsappNumber || (userPrivate as any)?.phoneNumber || '';
           const cleanMyNum = myWhatsapp.replace(/\D/g, '');
           if (cleanMyNum && cleanMyNum.length >= 10) {
-            if (isSender && !sharedContact?.senderWhatsapp) {
-              try {
-                await setDoc(doc(db, 'sharedContacts', reqData.id), {
-                  senderUid: currentUser.uid,
-                  senderWhatsapp: cleanMyNum,
-                  updatedAt: new Date().toISOString(),
-                }, { merge: true });
-                sharedContact = {
-                  ...(sharedContact || { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }),
-                  senderWhatsapp: cleanMyNum,
-                };
-              } catch (syncErr) {
-                console.warn('[Auto-sync] Could not sync sender whatsapp:', syncErr);
-              }
-            } else if (!isSender && (!sharedContact?.recipientWhatsapp && !sharedContact?.whatsapp)) {
-              try {
-                await setDoc(doc(db, 'sharedContacts', reqData.id), {
-                  recipientUid: currentUser.uid,
-                  recipientWhatsapp: cleanMyNum,
+            try {
+              await setDoc(
+                doc(db, 'sharedContacts', reqData.id, 'members', currentUser.uid),
+                {
+                  ownerUid: currentUser.uid,
+                  requestId: reqData.id,
                   whatsapp: cleanMyNum,
+                  shareConsent: true,
                   updatedAt: new Date().toISOString(),
-                }, { merge: true });
-                sharedContact = {
-                  ...(sharedContact || { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }),
-                  recipientWhatsapp: cleanMyNum,
-                  whatsapp: cleanMyNum,
-                };
-              } catch (syncErr) {
-                console.warn('[Auto-sync] Could not sync recipient whatsapp:', syncErr);
-              }
+                },
+                { merge: true }
+              );
+            } catch (syncErr) {
+              console.warn('[Auto-sync] Could not sync user own member whatsapp:', syncErr);
             }
           }
 
           list.push({
             request: reqData,
             partnerProfile,
-            sharedContact,
+            otherStudentWhatsappNumber,
             otherUserId,
             isSender,
           });
@@ -224,12 +269,25 @@ export const ConnectionsView: React.FC = () => {
     };
   }, [currentUser]);
 
-  const handleMessageWhatsAppClick = (reqId: string, whatsappNumber?: string) => {
+  const handleMessageWhatsAppClick = (reqId: string, whatsappNumber?: string, targetOtherUserId?: string) => {
     setWhatsappError((prev) => ({ ...prev, [reqId]: '' }));
     try {
       if (!whatsappNumber) {
         throw new Error("Partner's WhatsApp contact is private or not authorized.");
       }
+
+      const cleanTargetNum = whatsappNumber.replace(/\D/g, '');
+      const cleanMyNum = ((userPrivate as any)?.whatsapp || '').replace(/\D/g, '');
+
+      // Strict safety check: Never open current user's own number
+      if (cleanMyNum && cleanTargetNum === cleanMyNum) {
+        console.error("[WhatsApp Mismatch Guard] Refusing to open WhatsApp because target number matches current user's own number!", {
+          currentUserUid: currentUser?.uid,
+          targetOtherUserId,
+        });
+        throw new Error("Cannot message your own number. Target partner contact was not properly mapped.");
+      }
+
       openWhatsApp(whatsappNumber);
     } catch (err: any) {
       setWhatsappError((prev) => ({
@@ -268,10 +326,7 @@ export const ConnectionsView: React.FC = () => {
         </div>
       ) : (
         <div className="space-y-3.5 sm:space-y-4">
-          {connections.map(({ request, partnerProfile, sharedContact, isSender }) => {
-            const partnerWhatsapp = isSender
-              ? (sharedContact?.recipientWhatsapp || sharedContact?.whatsapp)
-              : (sharedContact?.senderWhatsapp || sharedContact?.whatsapp);
+          {connections.map(({ request, partnerProfile, otherStudentWhatsappNumber, otherUserId }) => {
             const err = whatsappError[request.id];
 
             return (
@@ -328,9 +383,9 @@ export const ConnectionsView: React.FC = () => {
 
                 {/* Primary Action: Message on WhatsApp OR WhatsApp Contact Private */}
                 <div className="pt-2 border-t border-amber-500/20">
-                  {partnerWhatsapp ? (
+                  {otherStudentWhatsappNumber ? (
                     <button
-                      onClick={() => handleMessageWhatsAppClick(request.id, partnerWhatsapp)}
+                      onClick={() => handleMessageWhatsAppClick(request.id, otherStudentWhatsappNumber, otherUserId)}
                       className="w-full py-3 min-h-[48px] px-4 rounded-2xl bg-emerald-600 text-white font-bold text-xs sm:text-sm shadow-lg shadow-emerald-600/30 hover:bg-emerald-500 flex items-center justify-center gap-2 transition-all active:scale-98"
                     >
                       <MessageCircle className="w-5 h-5 fill-white shrink-0" />
