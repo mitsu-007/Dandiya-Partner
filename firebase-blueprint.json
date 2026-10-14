@@ -1,0 +1,108 @@
+{
+  "entities": {
+    "UserPublic": {
+      "title": "UserPublic",
+      "description": "Public profile details visible in discovery and requests",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "fullName": { "type": "string", "maxLength": 100 },
+        "branch": { "type": "string", "maxLength": 50 },
+        "year": { "type": "string", "maxLength": 20 },
+        "outfitColor": { "type": "string", "maxLength": 50 },
+        "photoUrl": { "type": "string", "maxLength": 1000 },
+        "prompt": { "type": "string", "maxLength": 300 },
+        "danceVibe": { "type": "string", "maxLength": 50 },
+        "lookingFor": { "type": "string", "maxLength": 50 },
+        "isVerified": { "type": "boolean" },
+        "isPublic": { "type": "boolean" },
+        "isSuspended": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "fullName", "branch", "year", "danceVibe", "lookingFor"]
+    },
+    "UserPrivate": {
+      "title": "UserPrivate",
+      "description": "Private contact details and preferences strictly accessible by owner or admin",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 100 },
+        "whatsapp": { "type": "string", "maxLength": 20 },
+        "instagram": { "type": "string", "maxLength": 50 },
+        "shareWhatsapp": { "type": "boolean" },
+        "shareInstagram": { "type": "boolean" },
+        "blockedUids": { "type": "array" },
+        "skippedUids": { "type": "array" }
+      },
+      "required": ["email"]
+    },
+    "PartnerRequest": {
+      "title": "PartnerRequest",
+      "description": "Dandiya partner invitation request sent between students",
+      "type": "object",
+      "properties": {
+        "requestId": { "type": "string" },
+        "senderUid": { "type": "string" },
+        "recipientUid": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "accepted", "rejected", "cancelled"]
+        },
+        "senderShareContacts": { "type": "boolean" },
+        "recipientShareContacts": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "respondedAt": { "type": "string" }
+      },
+      "required": ["senderUid", "recipientUid", "status", "createdAt"]
+    },
+    "SharedContact": {
+      "title": "SharedContact",
+      "description": "Authorized contact exchange for accepted partner connections",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "whatsapp": { "type": "string", "maxLength": 20 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["ownerUid", "whatsapp", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notification alert for user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string", "maxLength": 100 },
+        "message": { "type": "string", "maxLength": 300 },
+        "type": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "title", "message", "read", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublic" },
+      "description": "Public profile collection"
+    },
+    "/usersPrivate/{userId}": {
+      "schema": { "$ref": "#/entities/UserPrivate" },
+      "description": "Private profile and contact information"
+    },
+    "/requests/{requestId}": {
+      "schema": { "$ref": "#/entities/PartnerRequest" },
+      "description": "Partner requests collection"
+    },
+    "/sharedContacts/{requestId}": {
+      "schema": { "$ref": "#/entities/SharedContact" },
+      "description": "Authorized shared WhatsApp contact numbers"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Notifications for users"
+    }
+  }
+}

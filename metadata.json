@@ -1,0 +1,6 @@
+{
+  "name": "Garba Saathi",
+  "description": "GLBITM Simple Dandiya Partner Finder",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
